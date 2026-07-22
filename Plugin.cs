@@ -11,7 +11,7 @@ public class SparrohPlugin : BaseUnityPlugin
 {
     public const string PluginGUID = "sparroh.redactednotification";
     public const string PluginName = "RedactedNotification";
-    public const string PluginVersion = "1.0.0";
+    public const string PluginVersion = "1.0.1";
 
     internal static new ManualLogSource Logger;
 

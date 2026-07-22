@@ -110,7 +110,8 @@ public sealed class RedactedHUD
         }
     }
 
-    private bool IsHudAlive => _hud != null && _hud.GameObject != null && _hud.Primary != null;
+    private bool IsHudAlive => HudHandle.IsValid(_hud) && _hud.Primary != null;
+
 
     public void Update()
     {
@@ -315,12 +316,13 @@ public sealed class RedactedHUD
         HudRepositionClient.Unregister(SparrohPlugin.PluginGUID);
         if (_hud != null)
         {
-            if (_hud.GameObject != null)
+            if (_hud.IsAlive)
                 _hud.Destroy();
             _hud = null;
         }
         _iconImage = null;
     }
+
 
     private void RefreshVisual(bool force)
     {
