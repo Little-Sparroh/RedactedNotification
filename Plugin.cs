@@ -1,5 +1,4 @@
 ﻿using System;
-using System.IO;
 using BepInEx;
 using BepInEx.Logging;
 using HarmonyLib;
@@ -7,22 +6,24 @@ using HarmonyLib;
 [BepInPlugin(PluginGUID, PluginName, PluginVersion)]
 [BepInDependency("sparroh.uilibrary")]
 [MycoMod(null, ModFlags.IsClientSide)]
-public class SparrohPlugin : BaseUnityPlugin
+public class RedactedNotificationPlugin : BaseUnityPlugin
 {
     public const string PluginGUID = "sparroh.redactednotification";
     public const string PluginName = "RedactedNotification";
-    public const string PluginVersion = "1.0.1";
+    public const string PluginVersion = "1.0.2";
 
-    internal static new ManualLogSource Logger;
-
-    internal static RedactedBoardScanner Scanner { get; private set; }
+    internal new static ManualLogSource Logger;
 
     private Harmony _harmony;
     private RedactedHUD _hud;
 
+    internal static RedactedBoardScanner Scanner { get; private set; }
+
     private void Awake()
     {
         Logger = base.Logger;
+
+        ConfigManager.Initialize(Config, Logger);
 
         try
         {
@@ -34,26 +35,10 @@ public class SparrohPlugin : BaseUnityPlugin
             return;
         }
 
-        var configFile = Config;
-        try
-        {
-            var watcher = new FileSystemWatcher(Paths.ConfigPath, "sparroh.redactednotification.cfg");
-            watcher.Changed += (s, e) =>
-            {
-                try { configFile.Reload(); }
-                catch { /* ignore reload races */ }
-            };
-            watcher.EnableRaisingEvents = true;
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning($"Failed to set up config watcher: {ex.Message}");
-        }
-
         try
         {
             Scanner = new RedactedBoardScanner();
-            _hud = new RedactedHUD(configFile, Scanner);
+            _hud = new RedactedHUD(Scanner);
         }
         catch (Exception ex)
         {
@@ -74,6 +59,18 @@ public class SparrohPlugin : BaseUnityPlugin
 
     private void Update()
     {
+        ConfigManager.Tick();
+
+        if (ConfigManager.ConsumePendingRefresh())
+            try
+            {
+                _hud?.OnConfigChanged();
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError($"Error in RedactedHUD.OnConfigChanged(): {ex.Message}");
+            }
+
         try
         {
             Scanner?.Update();
@@ -112,6 +109,8 @@ public class SparrohPlugin : BaseUnityPlugin
         {
             Logger.LogError($"Error in RedactedHUD.OnDestroy(): {ex.Message}");
         }
+
+        ConfigManager.Dispose();
 
         try
         {

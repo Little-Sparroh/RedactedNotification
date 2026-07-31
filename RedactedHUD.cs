@@ -1,5 +1,4 @@
 using System;
-using BepInEx.Configuration;
 using Pigeon.Movement;
 using Sparroh.UI;
 using TMPro;
@@ -8,116 +7,40 @@ using UnityEngine.UI;
 
 public sealed class RedactedHUD
 {
-    private readonly ConfigFile _configFile;
     private readonly RedactedBoardScanner _scanner;
-
-    private ConfigEntry<bool> _enableHud;
-    private ConfigEntry<bool> _showWhenNotDetected;
-    private ConfigEntry<bool> _enableBlink;
-    private ConfigEntry<float> _blinkSpeed;
-    private ConfigEntry<float> _blinkMinAlpha;
-    private ConfigEntry<float> _anchorX;
-    private ConfigEntry<float> _anchorY;
-    private ConfigEntry<string> _alertText;
-    private ConfigEntry<string> _idleText;
+    private Color _baseAlertColor = UIColors.Orchid;
+    private Color _baseIdleColor = UIColors.TextMuted;
+    private Sprite _fallbackTriangle;
 
     private HudHandle _hud;
     private Image _iconImage;
-    private Sprite _fallbackTriangle;
     private bool _lastDetected;
     private bool _lastShowIdle;
-    private Color _baseAlertColor = UIColors.Orchid;
-    private Color _baseIdleColor = UIColors.TextMuted;
 
+    public RedactedHUD(RedactedBoardScanner scanner)
+    {
+        _scanner = scanner;
+        Instance = this;
+    }
 
     public static RedactedHUD Instance { get; private set; }
 
-    public RedactedHUD(ConfigFile configFile, RedactedBoardScanner scanner)
-    {
-        _configFile = configFile;
-        _scanner = scanner;
-        Instance = this;
-
-        try
-        {
-            _enableHud = configFile.Bind(
-                "General",
-                "EnableHUD",
-                true,
-                "Show the ERROR REDACTED board notification on the player HUD.");
-
-            _showWhenNotDetected = configFile.Bind(
-                "General",
-                "ShowWhenNotDetected",
-                false,
-                "When enabled, always show a grey idle indicator (\"no ERROR detected.\") when ERROR REDACTED is not on the board. When disabled, the HUD is hidden until the modifier appears.");
-
-            _alertText = configFile.Bind(
-                "General",
-                "AlertText",
-                "ERROR REDACTED has appeared!",
-                "Text shown when ERROR REDACTED is on the current mission board.");
-
-            _idleText = configFile.Bind(
-                "General",
-                "IdleText",
-                "no ERROR detected.",
-                "Text shown in idle mode when ERROR REDACTED is not on the board.");
-
-            _enableBlink = configFile.Bind(
-                "General",
-                "EnableBlink",
-                true,
-                "Pulse the alert HUD when ERROR REDACTED is on the board so it is easier to notice.");
-
-            _blinkSpeed = configFile.Bind(
-                "General",
-                "BlinkSpeed",
-                2.0f,
-                "Blink rate in full cycles per second (soft alpha pulse). Reasonable range: 1–3.");
-
-            _blinkMinAlpha = configFile.Bind(
-                "General",
-                "BlinkMinAlpha",
-                0.35f,
-                "Minimum alpha during the dim phase of the blink (0–1). Higher = subtler blink.");
-
-            _anchorX = configFile.Bind(
-                "HUD Positioning",
-                "AnchorX",
-                0.50f,
-                "X anchor position for the notification (0-1).");
-
-            _anchorY = configFile.Bind(
-                "HUD Positioning",
-                "AnchorY",
-                0.12f,
-                "Y anchor position for the notification (0-1).");
-
-            _enableHud.SettingChanged += (_, __) => OnEnableChanged();
-            _showWhenNotDetected.SettingChanged += (_, __) => RefreshVisual(force: true);
-            _alertText.SettingChanged += (_, __) => RefreshVisual(force: true);
-            _idleText.SettingChanged += (_, __) => RefreshVisual(force: true);
-            _enableBlink.SettingChanged += (_, __) => ApplyBlinkAlpha(1f);
-            _blinkMinAlpha.SettingChanged += (_, __) => { /* applied next Update */ };
-            _anchorX.SettingChanged += (_, __) => OnAnchorChanged();
-            _anchorY.SettingChanged += (_, __) => OnAnchorChanged();
-
-        }
-        catch (Exception ex)
-        {
-            SparrohPlugin.Logger.LogError($"Failed to initialize RedactedHUD config: {ex.Message}");
-        }
-    }
-
     private bool IsHudAlive => HudHandle.IsValid(_hud) && _hud.Primary != null;
 
+    public void OnConfigChanged()
+    {
+        if (ConfigManager.EnableHud != null && !ConfigManager.EnableHud.Value && _hud != null)
+            DestroyHud();
+        UpdateHudVisibility();
+        RefreshVisual(true);
+        ApplyBlinkAlpha(1f);
+    }
 
     public void Update()
     {
         try
         {
-            if (_enableHud == null || !_enableHud.Value)
+            if (ConfigManager.EnableHud == null || !ConfigManager.EnableHud.Value)
             {
                 if (IsHudAlive && _hud.IsActive)
                     _hud.SetActive(false);
@@ -132,8 +55,9 @@ public sealed class RedactedHUD
                 Player.LocalPlayer.PlayerLook.Reticle == null)
                 return;
 
-            bool detected = _scanner != null && _scanner.HasRedactedOnBoard;
-            bool wantVisible = detected || (_showWhenNotDetected != null && _showWhenNotDetected.Value);
+            var detected = _scanner != null && _scanner.HasRedactedOnBoard;
+            var wantVisible = detected ||
+                              (ConfigManager.ShowWhenNotDetected != null && ConfigManager.ShowWhenNotDetected.Value);
 
             if (!wantVisible)
             {
@@ -150,12 +74,12 @@ public sealed class RedactedHUD
             }
 
             _hud.SetActive(true);
-            RefreshVisual(force: false);
+            RefreshVisual(false);
             UpdateBlink(detected);
         }
         catch (Exception ex)
         {
-            SparrohPlugin.Logger.LogError($"Error in RedactedHUD.Update(): {ex.Message}");
+            RedactedNotificationPlugin.Logger.LogError($"Error in RedactedHUD.Update(): {ex.Message}");
         }
     }
 
@@ -164,18 +88,17 @@ public sealed class RedactedHUD
         if (!IsHudAlive)
             return;
 
-        if (!detected || _enableBlink == null || !_enableBlink.Value)
+        if (!detected || ConfigManager.EnableBlink == null || !ConfigManager.EnableBlink.Value)
         {
             ApplyBlinkAlpha(1f);
             return;
         }
 
-        float speed = _blinkSpeed != null ? Mathf.Max(0.1f, _blinkSpeed.Value) : 2f;
-        float minAlpha = _blinkMinAlpha != null ? Mathf.Clamp01(_blinkMinAlpha.Value) : 0.35f;
+        var speed = ConfigManager.BlinkSpeed != null ? Mathf.Max(0.1f, ConfigManager.BlinkSpeed.Value) : 2f;
+        var minAlpha = ConfigManager.BlinkMinAlpha != null ? Mathf.Clamp01(ConfigManager.BlinkMinAlpha.Value) : 0.35f;
 
-        // Soft pulse: 1 → min → 1, about `speed` full cycles per second
-        float t = Mathf.PingPong(Time.unscaledTime * speed, 1f);
-        float alpha = Mathf.Lerp(minAlpha, 1f, t);
+        var t = Mathf.PingPong(Time.unscaledTime * speed, 1f);
+        var alpha = Mathf.Lerp(minAlpha, 1f, t);
         ApplyBlinkAlpha(alpha);
     }
 
@@ -188,21 +111,19 @@ public sealed class RedactedHUD
 
         if (_hud.Primary != null && _hud.Primary.Tmp != null)
         {
-            Color c = _lastDetected ? _baseAlertColor : _baseIdleColor;
+            var c = _lastDetected ? _baseAlertColor : _baseIdleColor;
             c.a = alpha;
             _hud.Primary.Tmp.color = c;
         }
 
         if (_iconImage != null)
         {
-            Color ic = _iconImage.color;
-            // Preserve RGB from ApplyIcon; only modulate alpha for blink
-            float baseA = _lastDetected ? 1f : 0.85f;
+            var ic = _iconImage.color;
+            var baseA = _lastDetected ? 1f : 0.85f;
             ic.a = baseA * alpha;
             _iconImage.color = ic;
         }
     }
-
 
     public void UpdateHudVisibility()
     {
@@ -212,44 +133,20 @@ public sealed class RedactedHUD
             return;
         }
 
-        if (_enableHud == null || !_enableHud.Value)
+        if (ConfigManager.EnableHud == null || !ConfigManager.EnableHud.Value)
         {
             _hud.SetActive(false);
             return;
         }
 
-        bool detected = _scanner != null && _scanner.HasRedactedOnBoard;
-        bool wantVisible = detected || (_showWhenNotDetected != null && _showWhenNotDetected.Value);
+        var detected = _scanner != null && _scanner.HasRedactedOnBoard;
+        var wantVisible = detected ||
+                          (ConfigManager.ShowWhenNotDetected != null && ConfigManager.ShowWhenNotDetected.Value);
         _hud.SetActive(wantVisible);
-    }
-
-    private void OnEnableChanged()
-    {
-        if (_enableHud != null && !_enableHud.Value && _hud != null)
-            DestroyHud();
-        UpdateHudVisibility();
-    }
-
-    private void OnAnchorChanged()
-    {
-        if (IsHudAlive)
-            _hud.SetAnchor(_anchorX.Value, _anchorY.Value);
     }
 
     private void ClearDestroyedHud()
     {
-        if (_hud == null)
-            return;
-
-        try
-        {
-            if (_hud.Rect != null)
-                HudRepositionClient.Unregister(SparrohPlugin.PluginGUID);
-        }
-        catch
-        {
-        }
-
         _hud = null;
         _iconImage = null;
     }
@@ -261,18 +158,21 @@ public sealed class RedactedHUD
 
         ClearDestroyedHud();
 
+        var anchors = ConfigManager.Anchors;
+        var ax = anchors != null ? anchors.XValue : 0.50f;
+        var ay = anchors != null ? anchors.YValue : 0.12f;
+
         _hud = HudBuilder.Create("RedactedNotificationHUD")
             .ParentToReticle()
-            .Anchor(_anchorX.Value, _anchorY.Value)
+            .Anchor(ax, ay)
             .Pivot(new Vector2(0.5f, 0.5f))
             .Size(420f, 32f)
-            .AddText("StatusText", fontSize: 18f, alignment: TextAlignmentOptions.Center)
+            .AddText("StatusText", 18f, TextAlignmentOptions.Center)
             .Build();
 
         if (!IsHudAlive)
             return;
 
-        // Icon to the left of the text
         try
         {
             var iconRt = UIFactory.CreateRect("RedactedIcon", _hud.Rect);
@@ -286,7 +186,6 @@ public sealed class RedactedHUD
             _iconImage.raycastTarget = false;
             _iconImage.preserveAspect = true;
 
-            // Nudge text slightly right so it doesn't sit under the icon
             if (_hud.Primary != null && _hud.Primary.Rect != null)
             {
                 var textRt = _hud.Primary.Rect;
@@ -295,42 +194,40 @@ public sealed class RedactedHUD
         }
         catch (Exception ex)
         {
-            SparrohPlugin.Logger.LogWarning($"Could not create redacted icon: {ex.Message}");
+            RedactedNotificationPlugin.Logger.LogWarning($"Could not create redacted icon: {ex.Message}");
             _iconImage = null;
         }
 
-        HudRepositionClient.Register(
-            SparrohPlugin.PluginGUID,
-            "ERROR REDACTED Alert",
-            _hud.Rect,
-            _anchorX,
-            _anchorY);
+        if (anchors != null)
+            _hud.EnableReposition(
+                RedactedNotificationPlugin.PluginGUID,
+                "ERROR REDACTED Alert",
+                anchors);
 
         _lastDetected = false;
         _lastShowIdle = false;
-        RefreshVisual(force: true);
+        RefreshVisual(true);
     }
 
     private void DestroyHud()
     {
-        HudRepositionClient.Unregister(SparrohPlugin.PluginGUID);
         if (_hud != null)
         {
             if (_hud.IsAlive)
                 _hud.Destroy();
             _hud = null;
         }
+
         _iconImage = null;
     }
-
 
     private void RefreshVisual(bool force)
     {
         if (!IsHudAlive)
             return;
 
-        bool detected = _scanner != null && _scanner.HasRedactedOnBoard;
-        bool showIdle = _showWhenNotDetected != null && _showWhenNotDetected.Value;
+        var detected = _scanner != null && _scanner.HasRedactedOnBoard;
+        var showIdle = ConfigManager.ShowWhenNotDetected != null && ConfigManager.ShowWhenNotDetected.Value;
 
         if (!force && detected == _lastDetected && showIdle == _lastShowIdle)
             return;
@@ -340,25 +237,28 @@ public sealed class RedactedHUD
 
         if (detected)
         {
-            string text = _alertText != null ? _alertText.Value : "ERROR REDACTED has appeared!";
+            var text = ConfigManager.AlertText != null
+                ? ConfigManager.AlertText.Value
+                : "ERROR REDACTED has appeared!";
             _baseAlertColor = GetAlertColor();
-            // Plain text + TMP.color so blink can modulate alpha without fighting rich-text tags
+
             _hud.Primary.Text = text;
             _hud.Primary.Tmp.color = _baseAlertColor;
-            ApplyIcon(alert: true);
+            ApplyIcon(true);
             ApplyBlinkAlpha(1f);
         }
         else if (showIdle)
         {
-            string text = _idleText != null ? _idleText.Value : "no ERROR detected.";
+            var text = ConfigManager.IdleText != null
+                ? ConfigManager.IdleText.Value
+                : "no ERROR detected.";
             _baseIdleColor = UIColors.TextMuted;
             _hud.Primary.Text = text;
             _hud.Primary.Tmp.color = _baseIdleColor;
-            ApplyIcon(alert: false);
+            ApplyIcon(false);
             ApplyBlinkAlpha(1f);
         }
     }
-
 
     private Color GetAlertColor()
     {
@@ -420,7 +320,6 @@ public sealed class RedactedHUD
         if (_fallbackTriangle != null)
             return _fallbackTriangle;
 
-        // Simple filled triangle in a 32x32 texture
         const int size = 32;
         var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
         tex.filterMode = FilterMode.Bilinear;
@@ -428,17 +327,14 @@ public sealed class RedactedHUD
 
         var clear = new Color(0f, 0f, 0f, 0f);
         var fill = Color.white;
-        for (int y = 0; y < size; y++)
+        for (var y = 0; y < size; y++)
+        for (var x = 0; x < size; x++)
         {
-            for (int x = 0; x < size; x++)
-            {
-                // Upward triangle
-                float nx = (x + 0.5f) / size;
-                float ny = (y + 0.5f) / size;
-                float halfWidth = ny * 0.5f;
-                bool inside = ny >= 0.12f && ny <= 0.92f && Mathf.Abs(nx - 0.5f) <= halfWidth * 0.9f;
-                tex.SetPixel(x, y, inside ? fill : clear);
-            }
+            var nx = (x + 0.5f) / size;
+            var ny = (y + 0.5f) / size;
+            var halfWidth = ny * 0.5f;
+            var inside = ny >= 0.12f && ny <= 0.92f && Mathf.Abs(nx - 0.5f) <= halfWidth * 0.9f;
+            tex.SetPixel(x, y, inside ? fill : clear);
         }
 
         tex.Apply(false, true);
@@ -454,7 +350,7 @@ public sealed class RedactedHUD
         }
         catch (Exception ex)
         {
-            SparrohPlugin.Logger.LogError($"Error in RedactedHUD.OnDestroy(): {ex.Message}");
+            RedactedNotificationPlugin.Logger.LogError($"Error in RedactedHUD.OnDestroy(): {ex.Message}");
         }
     }
 }

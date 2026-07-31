@@ -1,31 +1,24 @@
 using System;
 using Pigeon.Math;
-using UnityEngine;
+using Random = Pigeon.Math.Random;
 
-/// <summary>
-/// Detects whether ERROR REDACTED is present on the current mission board.
-/// Mirrors MissionSelectWindow board generation so it works mid-mission when the board refreshes.
-/// </summary>
 public sealed class RedactedBoardScanner
 {
-    private int _cachedSeed = int.MinValue;
-    private bool _hasRedactedOnBoard;
-    private int _redactedIndex = -1;
-    private MissionModifier _redactedModifier;
     private bool _resolveAttempted;
-    private int _matchCount;
 
-    public bool HasRedactedOnBoard => _hasRedactedOnBoard;
-    public int MatchCount => _matchCount;
-    public MissionModifier RedactedModifier => _redactedModifier;
-    public int RedactedIndex => _redactedIndex;
-    public int LastScannedSeed => _cachedSeed;
+    public bool HasRedactedOnBoard { get; private set; }
 
-    public bool IsResolved => _redactedIndex >= 0 && _redactedModifier != null;
+    public int MatchCount { get; private set; }
 
-    /// <summary>
-    /// Poll seed and rescan when the mission board rotates.
-    /// </summary>
+    public MissionModifier RedactedModifier { get; private set; }
+
+    public int RedactedIndex { get; private set; } = -1;
+
+    public int LastScannedSeed { get; private set; } = int.MinValue;
+
+    public bool IsResolved => RedactedIndex >= 0 && RedactedModifier != null;
+
+
     public void Update()
     {
         try
@@ -36,16 +29,16 @@ public sealed class RedactedBoardScanner
             if (!IsResolved && !TryResolveRedacted())
                 return;
 
-            int seed = Global.MissionSelectSeed;
-            if (seed != _cachedSeed)
+            var seed = Global.MissionSelectSeed;
+            if (seed != LastScannedSeed)
             {
-                _cachedSeed = seed;
+                LastScannedSeed = seed;
                 RescanBoard(seed);
             }
         }
         catch (Exception ex)
         {
-            SparrohPlugin.Logger.LogError($"RedactedBoardScanner.Update failed: {ex.Message}");
+            RedactedNotificationPlugin.Logger.LogError($"RedactedBoardScanner.Update failed: {ex.Message}");
         }
     }
 
@@ -57,27 +50,22 @@ public sealed class RedactedBoardScanner
         if (!IsResolved && !TryResolveRedacted())
             return;
 
-        _cachedSeed = Global.MissionSelectSeed;
-        RescanBoard(_cachedSeed);
+        LastScannedSeed = Global.MissionSelectSeed;
+        RescanBoard(LastScannedSeed);
     }
 
-    /// <summary>
-    /// Live feed from mission select UI (more accurate for special/custom buttons).
-    /// Call when a mission button is set up; does not replace seed-based scanning.
-    /// </summary>
+
     public void ObserveMission(ref MissionData mission)
     {
         if (!IsResolved && !TryResolveRedacted())
             return;
 
         if (MissionHasRedacted(ref mission))
-        {
-            if (!_hasRedactedOnBoard)
+            if (!HasRedactedOnBoard)
             {
-                _hasRedactedOnBoard = true;
-                SparrohPlugin.Logger.LogInfo("ERROR REDACTED observed on mission select board.");
+                HasRedactedOnBoard = true;
+                RedactedNotificationPlugin.Logger.LogInfo("ERROR REDACTED observed on mission select board.");
             }
-        }
     }
 
     public bool TryResolveRedacted()
@@ -88,47 +76,47 @@ public sealed class RedactedBoardScanner
         if (Global.Instance == null || Global.Instance.MissionModifiers == null)
             return false;
 
-        // Avoid spamming resolve every frame before Global is fully ready
-        if (_resolveAttempted && _redactedIndex < 0)
+
+        if (_resolveAttempted && RedactedIndex < 0)
         {
-            // Retry occasionally: modifiers array may populate after first frame
         }
 
         _resolveAttempted = true;
         var modifiers = Global.Instance.MissionModifiers;
-        int length = modifiers.Length;
+        var length = modifiers.Length;
 
-        for (int i = 0; i < length; i++)
+        for (var i = 0; i < length; i++)
         {
-            MissionModifier mod = modifiers[i];
+            var mod = modifiers[i];
             if (mod == null)
                 continue;
 
             if (IsErrorRedacted(mod))
             {
-                _redactedIndex = i;
-                _redactedModifier = mod;
-                SparrohPlugin.Logger.LogInfo(
+                RedactedIndex = i;
+                RedactedModifier = mod;
+                RedactedNotificationPlugin.Logger.LogInfo(
                     $"Resolved ERROR REDACTED modifier at index {i} (APIName='{mod.APIName}', Name='{SafeName(mod)}').");
                 return true;
             }
         }
 
-        // Fallback: scan by localized name / API without requiring exact class
-        for (int i = 0; i < length; i++)
+
+        for (var i = 0; i < length; i++)
         {
-            MissionModifier mod = modifiers[i];
+            var mod = modifiers[i];
             if (mod == null)
                 continue;
 
-            string api = mod.APIName ?? string.Empty;
-            string display = SafeName(mod);
-            string combined = (api + " " + display).ToLowerInvariant();
-            if (combined.Contains("redact") || combined.Contains("error redacted") || combined.Contains("error_redacted"))
+            var api = mod.APIName ?? string.Empty;
+            var display = SafeName(mod);
+            var combined = (api + " " + display).ToLowerInvariant();
+            if (combined.Contains("redact") || combined.Contains("error redacted") ||
+                combined.Contains("error_redacted"))
             {
-                _redactedIndex = i;
-                _redactedModifier = mod;
-                SparrohPlugin.Logger.LogInfo(
+                RedactedIndex = i;
+                RedactedModifier = mod;
+                RedactedNotificationPlugin.Logger.LogInfo(
                     $"Resolved ERROR REDACTED modifier (fallback) at index {i} (APIName='{api}').");
                 return true;
             }
@@ -155,24 +143,21 @@ public sealed class RedactedBoardScanner
         if (mod == null)
             return false;
 
-        string api = mod.APIName ?? string.Empty;
-        string apiLower = api.ToLowerInvariant();
+        var api = mod.APIName ?? string.Empty;
+        var apiLower = api.ToLowerInvariant();
 
-        // Common asset id patterns
+
         if (apiLower.Contains("error_redacted") ||
             apiLower.Contains("error-redacted") ||
             apiLower == "redacted" ||
             apiLower.Contains("redacted"))
-        {
-            // Prefer names that also imply ERROR, but accept pure "redacted" asset ids
             if (apiLower.Contains("redact"))
                 return true;
-        }
 
         try
         {
-            string name = mod.Name ?? string.Empty;
-            string nameLower = name.ToLowerInvariant();
+            var name = mod.Name ?? string.Empty;
+            var nameLower = name.ToLowerInvariant();
             if (nameLower.Contains("error") && nameLower.Contains("redact"))
                 return true;
             if (nameLower == "error redacted" || nameLower.Contains("error redacted"))
@@ -187,57 +172,57 @@ public sealed class RedactedBoardScanner
 
     private void RescanBoard(int currentSeed)
     {
-        _hasRedactedOnBoard = false;
-        _matchCount = 0;
+        HasRedactedOnBoard = false;
+        MatchCount = 0;
 
         if (Global.Instance == null || Global.Instance.Regions == null)
             return;
 
-        // Early game: intro incomplete hides the normal board
+
         try
         {
-            Mission intro = Global.GetMission("intro");
+            var intro = Global.GetMission("intro");
             if (intro != null && PlayerData.Instance != null && !PlayerData.Instance.HasCompletedMission(intro))
             {
-                SparrohPlugin.Logger.LogDebug("Board scan skipped: intro mission not completed.");
+                RedactedNotificationPlugin.Logger.LogDebug("Board scan skipped: intro mission not completed.");
                 return;
             }
         }
         catch
         {
-            // If intro lookup fails, still scan
         }
 
-        WorldRegion[] regions = Global.Instance.Regions;
-        for (int r = 0; r < regions.Length; r++)
+        var regions = Global.Instance.Regions;
+        for (var r = 0; r < regions.Length; r++)
         {
-            WorldRegion region = regions[r];
+            var region = regions[r];
             if (region == null || region.LockRegion)
                 continue;
 
             ScanRegion(region, currentSeed);
         }
 
-        if (_hasRedactedOnBoard)
-            SparrohPlugin.Logger.LogInfo($"ERROR REDACTED present on mission board (seed={currentSeed}, matches={_matchCount}).");
+        if (HasRedactedOnBoard)
+            RedactedNotificationPlugin.Logger.LogInfo(
+                $"ERROR REDACTED present on mission board (seed={currentSeed}, matches={MatchCount}).");
         else
-            SparrohPlugin.Logger.LogDebug($"Board scan complete (seed={currentSeed}): no ERROR REDACTED.");
+            RedactedNotificationPlugin.Logger.LogDebug($"Board scan complete (seed={currentSeed}): no ERROR REDACTED.");
     }
 
     private void ScanRegion(WorldRegion region, int currentSeed)
     {
-        const int missionCount = 8; // MissionSelectWindow.MissionCount
+        const int missionCount = 8;
 
-        // net48: avoid System.Span entirely (Mission.GetValidMissions takes ref Span<int>).
-        int[] missionBag = new int[Global.Instance.Missions.Length];
-        int missionBagCount = FillValidMissions(region.Flags, missionBag);
 
-        Pigeon.Math.Random random = new Pigeon.Math.Random(
+        var missionBag = new int[Global.Instance.Missions.Length];
+        var missionBagCount = FillValidMissions(region.Flags, missionBag);
+
+        var random = new Random(
             MathUtil.Squirrel3Hash((region.ID + 3173412) * 71239192, currentSeed));
 
-        bool[] usedMissions = new bool[Global.Instance.Missions.Length];
+        var usedMissions = new bool[Global.Instance.Missions.Length];
 
-        for (int j = 0; j < missionCount; j++)
+        for (var j = 0; j < missionCount; j++)
         {
             if (missionBagCount == 0)
                 missionBagCount = FillValidMissions(region.Flags, missionBag);
@@ -245,27 +230,26 @@ public sealed class RedactedBoardScanner
             if (missionBagCount == 0)
                 break;
 
-            int missionSeed = random.Next() + 1;
-            Pigeon.Math.Random missionRand = new Pigeon.Math.Random(MathUtil.Squirrel3Hash(missionSeed, currentSeed));
+            var missionSeed = random.Next() + 1;
+            var missionRand = new Random(MathUtil.Squirrel3Hash(missionSeed, currentSeed));
 
-            // Last slot may force designed/legacy scenes (authored) — match MissionSelectWindow
-            LevelFlags levelFlags = region.Flags;
-            bool useLegacy = false;
+
+            var levelFlags = region.Flags;
+            var useLegacy = false;
             if (missionCount > 1 && j >= missionCount - 1 && (region.Flags & LevelFlags.Procedural) != 0)
             {
-                SceneData[] legacyScenes = region.LegacyScenes;
+                var legacyScenes = region.LegacyScenes;
                 if (legacyScenes != null && legacyScenes.Length != 0)
                 {
                     useLegacy = true;
                     levelFlags &= ~LevelFlags.Procedural;
-                    for (int num4 = missionBagCount - 1; num4 >= 0; num4--)
-                    {
-                        if ((Global.Instance.Missions[missionBag[num4]].MissionFlags & MissionFlags.AllowInDesignedLevels) == 0)
+                    for (var num4 = missionBagCount - 1; num4 >= 0; num4--)
+                        if ((Global.Instance.Missions[missionBag[num4]].MissionFlags &
+                             MissionFlags.AllowInDesignedLevels) == 0)
                         {
                             missionBag[num4] = missionBag[missionBagCount - 1];
                             missionBagCount--;
                         }
-                    }
                 }
             }
 
@@ -275,18 +259,18 @@ public sealed class RedactedBoardScanner
             if (missionBagCount == 0)
                 break;
 
-            int bagIndex = missionRand.Next(missionBagCount);
-            int missionIndex = missionBag[bagIndex];
+            var bagIndex = missionRand.Next(missionBagCount);
+            var missionIndex = missionBag[bagIndex];
             missionBag[bagIndex] = missionBag[missionBagCount - 1];
             missionBagCount--;
             usedMissions[missionIndex] = true;
 
 
-            Mission mission = Global.Instance.Missions[missionIndex];
+            var mission = Global.Instance.Missions[missionIndex];
             if (mission == null)
                 continue;
 
-            SceneData[] scenes = useLegacy && region.LegacyScenes != null && region.LegacyScenes.Length > 0
+            var scenes = useLegacy && region.LegacyScenes != null && region.LegacyScenes.Length > 0
                 ? region.LegacyScenes
                 : region.Scenes;
 
@@ -294,7 +278,7 @@ public sealed class RedactedBoardScanner
             if (scenes == null || scenes.Length == 0)
                 continue;
 
-            SceneData scene = scenes[missionRand.Next(scenes.Length)];
+            var scene = scenes[missionRand.Next(scenes.Length)];
             var data = new MissionData(
                 missionSeed,
                 mission,
@@ -306,53 +290,56 @@ public sealed class RedactedBoardScanner
             CheckAndCount(ref data);
         }
 
-        // Always-show + hidden rare missions (same as MissionSelectWindow.SetupMissions tail)
-        for (int k = 0; k < Global.Instance.Missions.Length; k++)
+
+        for (var k = 0; k < Global.Instance.Missions.Length; k++)
         {
-            Mission mission = Global.Instance.Missions[k];
+            var mission = Global.Instance.Missions[k];
             if (mission == null)
                 continue;
 
-            if ((mission.MissionFlags & MissionFlags.NormalMission) == 0 && mission.ShowHiddenMissionInSelectScreen(region))
+            if ((mission.MissionFlags & MissionFlags.NormalMission) == 0 &&
+                mission.ShowHiddenMissionInSelectScreen(region))
             {
-                int missionSeed = random.Next() + 1;
-                AddSpecialMission(mission, missionSeed, region, currentSeed, spawnInDesignedScene: false);
+                var missionSeed = random.Next() + 1;
+                AddSpecialMission(mission, missionSeed, region, currentSeed, false);
             }
-            else if ((mission.MissionFlags & MissionFlags.AlwaysShowInMissionSelect) != MissionFlags.None && !usedMissions[k])
+            else if ((mission.MissionFlags & MissionFlags.AlwaysShowInMissionSelect) != MissionFlags.None &&
+                     !usedMissions[k])
             {
                 usedMissions[k] = true;
-                int missionSeed = random.Next() + 1;
-                bool designed = (mission.MissionFlags & MissionFlags.AllowInDesignedLevels) != MissionFlags.None
-                    && random.NextFloat() <= 0.35f;
+                var missionSeed = random.Next() + 1;
+                var designed = (mission.MissionFlags & MissionFlags.AllowInDesignedLevels) != MissionFlags.None
+                               && random.NextFloat() <= 0.35f;
                 AddSpecialMission(mission, missionSeed, region, currentSeed, designed);
             }
         }
 
-        for (int l = 0; l < Global.Instance.Missions.Length; l++)
+        for (var l = 0; l < Global.Instance.Missions.Length; l++)
         {
-            Mission mission = Global.Instance.Missions[l];
+            var mission = Global.Instance.Missions[l];
             if (mission == null)
                 continue;
 
             if ((mission.MissionFlags & MissionFlags.DontShow) != MissionFlags.None)
             {
-                float rareChance = mission.GetRareSpawnChance();
+                var rareChance = mission.GetRareSpawnChance();
                 if (random.NextFloat() < rareChance)
                 {
-                    int missionSeed = random.Next() + 1;
-                    AddSpecialMission(mission, missionSeed, region, currentSeed, spawnInDesignedScene: false);
+                    var missionSeed = random.Next() + 1;
+                    AddSpecialMission(mission, missionSeed, region, currentSeed, false);
                 }
             }
         }
     }
 
-    private void AddSpecialMission(Mission mission, int missionSeed, WorldRegion region, int currentSeed, bool spawnInDesignedScene)
+    private void AddSpecialMission(Mission mission, int missionSeed, WorldRegion region, int currentSeed,
+        bool spawnInDesignedScene)
     {
-        Pigeon.Math.Random missionRand = new Pigeon.Math.Random(MathUtil.Squirrel3Hash(missionSeed, currentSeed));
-        SceneData[] scenes = region.Scenes;
+        var missionRand = new Random(MathUtil.Squirrel3Hash(missionSeed, currentSeed));
+        var scenes = region.Scenes;
         if (spawnInDesignedScene && (region.Flags & LevelFlags.Procedural) != 0)
         {
-            SceneData[] legacy = region.LegacyScenes;
+            var legacy = region.LegacyScenes;
             if (legacy != null && legacy.Length != 0)
                 scenes = legacy;
         }
@@ -360,7 +347,7 @@ public sealed class RedactedBoardScanner
         if (scenes == null || scenes.Length == 0)
             return;
 
-        SceneData scene = scenes[missionRand.Next(scenes.Length)];
+        var scene = scenes[missionRand.Next(scenes.Length)];
         var data = new MissionData(
             missionSeed,
             mission,
@@ -377,8 +364,8 @@ public sealed class RedactedBoardScanner
         if (!MissionHasRedacted(ref data))
             return;
 
-        _hasRedactedOnBoard = true;
-        _matchCount++;
+        HasRedactedOnBoard = true;
+        MatchCount++;
     }
 
     public bool MissionHasRedacted(ref MissionData data)
@@ -386,60 +373,46 @@ public sealed class RedactedBoardScanner
         if (!IsResolved)
             return false;
 
-        int count = data.GetModifierCount();
+        var count = data.GetModifierCount();
         if (count <= 0)
             return false;
 
-        for (int i = 0; i < count; i++)
-        {
-            if (data.GetModifier(i) == _redactedIndex)
+        for (var i = 0; i < count; i++)
+            if (data.GetModifier(i) == RedactedIndex)
                 return true;
-        }
 
         return false;
     }
 
-    /// <summary>
-    /// Array-based reimplementation of Mission.GetValidMissions (avoids Span on net48).
-    /// </summary>
+
     private static int FillValidMissions(LevelFlags compatibleLevels, int[] indexBuffer, int onlyThisIndex = -1)
     {
-        Mission[] missions = Global.Instance.Missions;
-        int result = 0;
-        for (int i = 0; i < missions.Length; i++)
-        {
+        var missions = Global.Instance.Missions;
+        var result = 0;
+        for (var i = 0; i < missions.Length; i++)
             if (onlyThisIndex >= 0)
             {
                 indexBuffer[result++] = onlyThisIndex;
             }
             else if ((missions[i].MissionFlags & MissionFlags.DontShow) == 0)
             {
-                bool flag = false;
+                var flag = false;
                 if ((missions[i].MissionFlags & MissionFlags.AllowInProceduralLevels) != MissionFlags.None
                     && (compatibleLevels & LevelFlags.Procedural) != 0)
-                {
                     flag = true;
-                }
 
-                bool flag2 = false;
+                var flag2 = false;
                 if ((missions[i].MissionFlags & MissionFlags.AllowInDesignedLevels) != MissionFlags.None
                     && (compatibleLevels & LevelFlags.Procedural) == 0)
-                {
                     flag2 = true;
-                }
 
                 if ((flag || flag2)
                     && missions[i].CanBeSelected()
                     && (missions[i].CompatibleLevels & LevelFlags.AllRegions & compatibleLevels) != 0
                     && (missions[i].MissionFlags & MissionFlags.SecretMission) == 0)
-                {
                     indexBuffer[result++] = i;
-                }
             }
-        }
 
         return result;
     }
 }
-
-
